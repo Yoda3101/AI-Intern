@@ -1,0 +1,174 @@
+# ============================================
+# PART A — DATA PREPARATION
+# ============================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. Load datasets
+trades = pd.read_csv("historical_data.csv")
+sentiment = pd.read_csv("fear_greed_index.csv")
+
+# 2. Basic documentation
+print("=== DATA OVERVIEW ===")
+print("Trades shape:", trades.shape)
+print("Sentiment shape:", sentiment.shape)
+
+print("\nMissing values (Trades):")
+print(trades.isna().sum())
+
+print("\nMissing values (Sentiment):")
+print(sentiment.isna().sum())
+
+print("\nDuplicate rows (Trades):", trades.duplicated().sum())
+print("Duplicate rows (Sentiment):", sentiment.duplicated().sum())
+
+# 3. Convert timestamps and align to daily level
+trades['Timestamp'] = pd.to_datetime(trades['Timestamp'])
+trades['date'] = trades['Timestamp'].dt.date
+
+sentiment['timestamp'] = pd.to_datetime(sentiment['timestamp'])
+sentiment['date'] = sentiment['timestamp'].dt.date
+
+# 4. Merge datasets on daily date
+merged = trades.merge(
+    sentiment[['date', 'value', 'classification']],
+    on='date',
+    how='left'
+)
+
+# Rename for clarity
+merged.rename(columns={
+    'Closed PnL': 'pnl',
+    'Size USD': 'trade_size_usd'
+}, inplace=True)
+
+# ============================================
+# KEY METRICS
+# ============================================
+
+# Daily PnL
+daily_pnl = merged.groupby('date')['pnl'].sum().reset_index()
+
+# Win rate
+merged['win'] = merged['pnl'] > 0
+daily_win_rate = merged.groupby('date')['win'].mean().reset_index()
+
+# Average trade size
+avg_trade_size = merged.groupby('date')['trade_size_usd'].mean().reset_index()
+
+# Trades per day
+trades_per_day = merged.groupby('date').size().reset_index(name='num_trades')
+
+# Long/Short ratio
+long_short = (
+    merged.groupby(['date','Side'])
+    .size()
+    .unstack(fill_value=0)
+)
+
+if 'BUY' in long_short.columns and 'SELL' in long_short.columns:
+    long_short['long_short_ratio'] = long_short['BUY'] / (long_short['SELL'] + 1)
+
+# ============================================
+# PART B — ANALYSIS
+# ============================================
+
+# 1. Fear vs Greed comparison
+fear_greed_summary = (
+    merged.groupby('classification')
+    .agg({
+        'pnl':'mean',
+        'win':'mean',
+        'trade_size_usd':'mean'
+    })
+)
+
+print("\n=== FEAR VS GREED SUMMARY ===")
+print(fear_greed_summary)
+
+# 2. Drawdown proxy (daily cumulative PnL)
+daily_total = merged.groupby(['date','classification'])['pnl'].sum().reset_index()
+daily_total['cum_pnl'] = daily_total.groupby('classification')['pnl'].cumsum()
+daily_total['drawdown'] = daily_total['cum_pnl'] - daily_total.groupby('classification')['cum_pnl'].cummax()
+
+# 3. Behavior change by sentiment
+behavior_by_sentiment = (
+    merged.groupby('classification')
+    .agg({
+        'trade_size_usd':'mean',
+        'pnl':'mean',
+        'win':'mean'
+    })
+)
+
+print("\n=== BEHAVIOR BY SENTIMENT ===")
+print(behavior_by_sentiment)
+
+# ============================================
+# SEGMENTATION
+# ============================================
+
+# Leverage proxy = trade_size_usd (if real leverage column exists replace here)
+account_summary = (
+    merged.groupby('Account')
+    .agg({
+        'pnl':'sum',
+        'trade_size_usd':'mean',
+        'Trade ID':'count'
+    })
+    .rename(columns={'Trade ID':'num_trades'})
+)
+
+# High vs Low leverage (proxy by trade size)
+median_size = account_summary['trade_size_usd'].median()
+account_summary['leverage_segment'] = np.where(
+    account_summary['trade_size_usd'] > median_size,
+    'High',
+    'Low'
+)
+
+# Frequent vs Infrequent traders
+median_trades = account_summary['num_trades'].median()
+account_summary['frequency_segment'] = np.where(
+    account_summary['num_trades'] > median_trades,
+    'Frequent',
+    'Infrequent'
+)
+
+# Consistent winners
+account_summary['winner_segment'] = np.where(
+    account_summary['pnl'] > 0,
+    'Winner',
+    'Loser'
+)
+
+print("\n=== SEGMENT SUMMARY ===")
+print(account_summary.head())
+
+# ============================================
+# VISUALIZATIONS (NO CUSTOM COLORS)
+# ============================================
+
+# Chart 1 — Avg PnL by Sentiment
+plt.figure()
+fear_greed_summary['pnl'].plot(kind='bar')
+plt.title("Average PnL by Sentiment")
+plt.tight_layout()
+plt.show()
+
+# Chart 2 — Win Rate by Sentiment
+plt.figure()
+fear_greed_summary['win'].plot(kind='bar')
+plt.title("Win Rate by Sentiment")
+plt.tight_layout()
+plt.show()
+
+# Chart 3 — Trade Size by Sentiment
+plt.figure()
+fear_greed_summary['trade_size_usd'].plot(kind='bar')
+plt.title("Average Trade Size by Sentiment")
+plt.tight_layout()
+plt.show()
+
